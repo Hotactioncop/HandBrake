@@ -23,6 +23,7 @@
 #ifdef __APPLE__
 #include "platform/macosx/vt_common.h"
 #endif
+#include "handbrake/vce_common.h"
 
 typedef struct
 {
@@ -1449,6 +1450,10 @@ static void sanitize_filter_list_pre(hb_job_t *job, hb_geometry_t src_geo)
         hb_qsv_sanitize_filter_list(job);
     }
 #endif
+    if (hb_vce_dec_is_enabled(job))
+    {
+        hb_vce_sanitize_filter_list(job);
+    }
 }
 
 static void sanitize_filter_list_post(hb_job_t *job)
