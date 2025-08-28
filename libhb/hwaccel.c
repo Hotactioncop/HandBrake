@@ -10,6 +10,7 @@
 #include "handbrake/hwaccel.h"
 #include "handbrake/handbrake.h"
 #include "handbrake/qsv_common.h"
+#include "handbrake/vce_common.h"
 
 static hb_buffer_t * upload(void *hw_frames_ctx, hb_buffer_t **buf_in)
 {

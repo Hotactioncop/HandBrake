@@ -47,6 +47,7 @@
 #include "libavfilter/buffersrc.h"
 #include "libavfilter/buffersink.h"
 #include "libavutil/hwcontext.h"
+#include "libavutil/time.h"
 #include "handbrake/hwaccel.h"
 #include "handbrake/lang.h"
 #include "handbrake/audio_resample.h"
@@ -55,6 +56,7 @@
 #if HB_PROJECT_FEATURE_QSV
 #include "handbrake/qsv_common.h"
 #endif
+#include "handbrake/vce_common.h"
 
 static void compute_frame_duration( hb_work_private_t *pv );
 static int  decavcodecaInit( hb_work_object_t *, hb_job_t * );
@@ -1164,7 +1166,14 @@ static hb_buffer_t *copy_frame( hb_work_private_t *pv )
     reordered_data_t * reordered = NULL;
     hb_buffer_t      * out;
 
-    out = hb_avframe_to_video_buffer(pv->frame, (AVRational){1,1});
+    if(pv->job && pv->job->hw_pix_fmt == AV_PIX_FMT_AMF_SURFACE)
+    {
+        out = hb_vce_copy_avframe_to_video_buffer(pv->job, pv->frame, (AVRational){1,1});
+    }
+    else
+    {
+        out = hb_avframe_to_video_buffer(pv->frame, (AVRational){1,1});
+    }
 
     if (pv->frame->pts != AV_NOPTS_VALUE)
     {
@@ -1367,6 +1376,7 @@ int reinit_video_filters(hb_work_private_t * pv)
     hb_filter_init_t   filter_init;
     enum AVPixelFormat pix_fmt;
     enum AVColorRange  color_range;
+    int                insert_converter = 0;
 
     if (!pv->job)
     {
@@ -1398,6 +1408,11 @@ int reinit_video_filters(hb_work_private_t * pv)
             orig_height = pv->job->title->geometry.height;
         }
         pix_fmt = pv->job->hw_pix_fmt != AV_PIX_FMT_NONE ? pv->job->hw_pix_fmt : pv->job->input_pix_fmt;
+
+        if( pv->job->hw_pix_fmt == AV_PIX_FMT_AMF_SURFACE && pv->job->amf.converter_needed && !pv->job->amf.converter_inserted)
+        {
+            insert_converter = 1; // insert AMF format converter from NV12 to YUV420 if HB SW filters are in pipeline
+        }
         color_range = pv->job->color_range;
     }
 
@@ -1405,7 +1420,9 @@ int reinit_video_filters(hb_work_private_t * pv)
         orig_width         == pv->frame->width   &&
         orig_height        == pv->frame->height  &&
         color_range        == pv->frame->color_range &&
-        HB_ROTATION_0      == pv->title->rotation)
+        HB_ROTATION_0      == pv->title->rotation &&
+        !insert_converter &&
+        (!pv->job || !pv->job->amf.converter_inserted))
     {
         // No filtering required.
         close_video_filters(pv);
@@ -1416,7 +1433,8 @@ int reinit_video_filters(hb_work_private_t * pv)
         pv->video_filters.width       == pv->frame->width  &&
         pv->video_filters.height      == pv->frame->height &&
         pv->video_filters.color_range == pv->frame->color_range &&
-        pv->video_filters.pix_fmt     == pv->frame->format)
+        pv->video_filters.pix_fmt     == pv->frame->format &&
+        !insert_converter)
     {
         // Current filter settings are good
         return 0;
@@ -1441,7 +1459,8 @@ int reinit_video_filters(hb_work_private_t * pv)
     if (pix_fmt            != pv->frame->format ||
         orig_width         != pv->frame->width  ||
         orig_height        != pv->frame->height ||
-        color_range        != pv->frame->color_range)
+        color_range        != pv->frame->color_range ||
+        (pv->job && insert_converter))
     {
         settings = hb_dict_init();
 #if HB_PROJECT_FEATURE_QSV && (defined( _WIN32 ) || defined( __MINGW32__ ))
@@ -1455,7 +1474,7 @@ int reinit_video_filters(hb_work_private_t * pv)
         }
         else
 #endif
-        if (pv->frame->hw_frames_ctx && pv->job->hw_pix_fmt == AV_PIX_FMT_CUDA)
+        if (pv->frame->hw_frames_ctx && pv->job && pv->job->hw_pix_fmt == AV_PIX_FMT_CUDA)
         {
             if (color_range != pv->frame->color_range)
             {
@@ -1468,6 +1487,15 @@ int reinit_video_filters(hb_work_private_t * pv)
             hb_dict_set(settings, "interp_algo", hb_value_string("lanczos"));
             hb_dict_set(settings, "format", hb_value_string(av_get_pix_fmt_name(pv->job->input_pix_fmt)));
             hb_avfilter_append_dict(filters, "scale_cuda", settings);
+        }
+        else if ((pv->frame->hw_frames_ctx && pv->job && pv->job->hw_pix_fmt == AV_PIX_FMT_AMF_SURFACE) &&
+                insert_converter)
+        {
+            pv->job->amf.num_hw_filters++;
+            hb_dict_set(settings, "format", hb_value_string(av_get_pix_fmt_name(pv->job->input_pix_fmt)));
+
+            hb_avfilter_append_dict(filters, "vpp_amf", settings);
+            pv->job->amf.converter_inserted = 1;
         }
         else if (hb_av_can_use_zscale(pv->frame->format,
                                       pv->frame->width, pv->frame->height,
@@ -1700,6 +1728,7 @@ static int decodeFrame( hb_work_private_t * pv, packet_info_t * packet_info )
     AVPacket *avp = pv->pkt;
     reordered_data_t * reordered;
     AVFrame *recv_frame = pv->frame;
+    int send_packet = 1;
 
     if (pv->hw_frame)
     {
@@ -1754,20 +1783,35 @@ static int decodeFrame( hb_work_private_t * pv, packet_info_t * packet_info )
         hb_buffer_close(&pv->palette);
     }
 
-    ret = avcodec_send_packet(pv->context, avp);
-    av_packet_unref(avp);
-    if (ret < 0 && ret != AVERROR_EOF)
-    {
-        ++pv->decode_errors;
-        return 0;
-    }
-
     do
     {
+        if(send_packet)
+        {
+            send_packet = 0;
+            ret = avcodec_send_packet(pv->context, avp);
+            if(ret == AVERROR(EAGAIN))
+            {
+                send_packet = 1; // input is full: receive frame and repeat send
+                ret = 0;
+            }
+            else
+            {
+                av_packet_unref(avp);
+            }
+            if (ret < 0 && ret != AVERROR_EOF)
+            {
+                ++pv->decode_errors;
+                return 0;
+            }
+        }
         ret = avcodec_receive_frame(pv->context, recv_frame);
         if (ret < 0 && ret != AVERROR(EAGAIN) && ret != AVERROR_EOF)
         {
             ++pv->decode_errors;
+        }
+        if(ret == AVERROR(EAGAIN) && send_packet)
+        {
+            continue;
         }
         if (ret < 0)
         {
@@ -1777,8 +1821,11 @@ static int decodeFrame( hb_work_private_t * pv, packet_info_t * packet_info )
 
         if (pv->hw_frame)
         {
-            if (pv->hw_frame->hw_frames_ctx)
+            if (pv->hw_frame->hw_frames_ctx && (pv->job == NULL || pv->hw_frame->format != AV_PIX_FMT_AMF_SURFACE))
             {
+                AVHWFramesContext *hwfc = (AVHWFramesContext *)pv->hw_frame->hw_frames_ctx->data;
+                pv->frame->format = hwfc->sw_format;
+                // tranfer to system memory
                 ret = av_hwframe_transfer_data(pv->frame, pv->hw_frame, 0);
                 av_frame_copy_props(pv->frame, pv->hw_frame);
                 av_frame_unref(pv->hw_frame);
@@ -1790,6 +1837,7 @@ static int decodeFrame( hb_work_private_t * pv, packet_info_t * packet_info )
             }
             else
             {
+                /// keep data in video memory for AMF or
                 // HWAccel falled back to the software decoder
                 av_frame_ref(pv->frame, pv->hw_frame);
                 av_frame_unref(pv->hw_frame);
@@ -1803,7 +1851,11 @@ static int decodeFrame( hb_work_private_t * pv, packet_info_t * packet_info )
         // recompute the frame/field duration, because sometimes it changes
         compute_frame_duration( pv );
         filter_video(pv);
-    } while (ret >= 0);
+        if(send_packet)
+        {
+            av_usleep(100);// wait 0.1 ms before resubmitting
+        }
+    } while (ret >= 0 || send_packet);
 
     if ( global_verbosity_level <= 1 )
     {
@@ -1816,7 +1868,7 @@ static int decodeFrame( hb_work_private_t * pv, packet_info_t * packet_info )
 
 static int decavcodecvInit( hb_work_object_t * w, hb_job_t * job )
 {
-
+    AVDictionary * av_opts = NULL;
     hb_work_private_t *pv = calloc( 1, sizeof( hb_work_private_t ) );
 
     w->private_data = pv;
@@ -1864,7 +1916,8 @@ static int decavcodecvInit( hb_work_object_t * w, hb_job_t * job )
         av_buffer_replace(&pv->context->hw_device_ctx, w->hw_device_ctx);
 
         if (job == NULL ||
-            (job->hw_pix_fmt == AV_PIX_FMT_NONE && job->hw_decode & HB_DECODE_FORCE_HW))
+            (job->hw_pix_fmt == AV_PIX_FMT_NONE && job->hw_decode & HB_DECODE_FORCE_HW) ||
+            job->hw_pix_fmt == AV_PIX_FMT_AMF_SURFACE)
         {
             pv->hw_frame = av_frame_alloc();
         }
@@ -1878,7 +1931,6 @@ static int decavcodecvInit( hb_work_object_t * w, hb_job_t * job )
                                   ic->streams[pv->title->video_id]->codecpar);
 
         // Set decoder opts
-        AVDictionary * av_opts = NULL;
         if (pv->title->flags & HBTF_NO_IDR)
         {
             av_dict_set( &av_opts, "flags", "output_corrupt", 0 );
@@ -2436,6 +2488,15 @@ static int decavcodecvInfo( hb_work_object_t *w, hb_work_info_t *info )
             pv->context->pix_fmt, pv->context->width, pv->context->height))
         {
             info->video_decode_support |= HB_DECODE_QSV;
+        }
+    }
+#endif
+#if HB_PROJECT_FEATURE_VCE
+    if (hb_vce_available())
+    {
+        if (hb_vce_decode_get_codec_name(pv->context->codec_id) != NULL)
+        {
+            info->video_decode_support |= HB_DECODE_AMFDEC;
         }
     }
 #endif

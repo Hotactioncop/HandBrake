@@ -1406,6 +1406,9 @@ static void sanitize_filter_list_pre(hb_job_t *job, hb_geometry_t src_geo)
             }
         }
     }
+
+    if (hb_vce_dec_is_enabled(job))
+        hb_vce_sanitize_filter_list(job);
 }
 
 static enum AVPixelFormat match_pix_fmt(enum AVPixelFormat pix_fmt,

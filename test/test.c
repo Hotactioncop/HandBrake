@@ -3301,6 +3301,10 @@ static int ParseOptions( int argc, char ** argv )
                     {
                         hw_decode = HB_DECODE_MF;
                     }
+                    else if (!strcmp(optarg, "amfdec"))
+                    {
+                        hw_decode = HB_DECODE_AMFDEC;
+                    }
                     else
                     {
                         hw_decode = 0;
