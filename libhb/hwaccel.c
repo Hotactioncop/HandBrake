@@ -152,7 +152,7 @@ static int is_encoder_supported(hb_hwaccel_t *hwaccel, int encoder)
 
 static int is_rotation_supported(hb_hwaccel_t *hwaccel, int rotation)
 {
-    return rotation != HB_ROTATION_0 && (hwaccel->caps & HB_HWACCEL_CAP_ROTATE) == 0 ? 0 : 1;
+    return (rotation == HB_ROTATION_0) || (rotation != HB_ROTATION_0 && (hwaccel->caps & HB_HWACCEL_CAP_ROTATE) == 0 ? 0 : 1);
 }
 
 int hb_hwaccel_can_use_full_hw_pipeline(hb_hwaccel_t *hwaccel, hb_list_t *list_filter, int encoder, int rotation)
@@ -320,7 +320,13 @@ int hb_hwaccel_hwframes_ctx_init(AVCodecContext *ctx,
         frames_hwctx->frame_type = MFX_MEMTYPE_VIDEO_MEMORY_DECODER_TARGET;
     }
 #endif
-
+#if HB_PROJECT_FEATURE_AMFDEC
+    if (hw_pix_fmt == AV_PIX_FMT_AMF_SURFACE)
+    {
+        ctx->extra_hw_frames = HB_VCE_FFMPEG_EXTRA_HW_FRAMES;
+        frames_ctx->initial_pool_size = HB_VCE_FFMPEG_INITIAL_POOL_SIZE;
+    }
+#endif
     if (av_hwframe_ctx_init(ctx->hw_frames_ctx) != 0)
     {
         hb_error("hwaccel: failed to initialize hw frames context - av_hwframe_ctx_init");

@@ -188,37 +188,40 @@ int hb_vce_av1_available()
 
 int hb_map_vce_preset_name(int vcodec, const char *preset)
 {
-    if (vcodec == HB_VCODEC_FFMPEG_VCE_AV1)
+    if (preset)
     {
-        if (strcmp(preset, "high quality") == 0) {
-            return AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_HIGH_QUALITY;
-        }  else if (strcmp(preset, "quality") == 0) {
-            return AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_QUALITY;
-        } else if (strcmp(preset, "balanced") == 0) {
-            return AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_BALANCED;
-        } else if (strcmp(preset, "speed") == 0) {
-            return AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_SPEED;
+        if (vcodec == HB_VCODEC_FFMPEG_VCE_AV1)
+        {
+            if (strcmp(preset, "high quality") == 0) {
+                return AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_HIGH_QUALITY;
+            }  else if (strcmp(preset, "quality") == 0) {
+                return AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_QUALITY;
+            } else if (strcmp(preset, "balanced") == 0) {
+                return AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_BALANCED;
+            } else if (strcmp(preset, "speed") == 0) {
+                return AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_SPEED;
+            }
         }
-    }
-    else if (vcodec == HB_VCODEC_FFMPEG_VCE_H265 ||
-             vcodec == HB_VCODEC_FFMPEG_VCE_H265_10BIT)
-    {
-        if (strcmp(preset, "quality") == 0) {
-            return AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_QUALITY;
-        } else if (strcmp(preset, "balanced") == 0) {
-            return AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_BALANCED;
-        } else if (strcmp(preset, "speed") == 0) {
-            return AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_SPEED;
+        else if (vcodec == HB_VCODEC_FFMPEG_VCE_H265 ||
+                vcodec == HB_VCODEC_FFMPEG_VCE_H265_10BIT)
+        {
+            if (strcmp(preset, "quality") == 0) {
+                return AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_QUALITY;
+            } else if (strcmp(preset, "balanced") == 0) {
+                return AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_BALANCED;
+            } else if (strcmp(preset, "speed") == 0) {
+                return AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_SPEED;
+            }
         }
-    }
-    else if (vcodec == HB_VCODEC_FFMPEG_VCE_H264)
-    {
-        if (strcmp(preset, "quality") == 0) {
-            return AMF_VIDEO_ENCODER_QUALITY_PRESET_QUALITY;
-        } else if (strcmp(preset, "balanced") == 0) {
-            return AMF_VIDEO_ENCODER_QUALITY_PRESET_BALANCED;
-        } else if (strcmp(preset, "speed") == 0) {
-            return  AMF_VIDEO_ENCODER_QUALITY_PRESET_SPEED;
+        else if (vcodec == HB_VCODEC_FFMPEG_VCE_H264)
+        {
+            if (strcmp(preset, "quality") == 0) {
+                return AMF_VIDEO_ENCODER_QUALITY_PRESET_QUALITY;
+            } else if (strcmp(preset, "balanced") == 0) {
+                return AMF_VIDEO_ENCODER_QUALITY_PRESET_BALANCED;
+            } else if (strcmp(preset, "speed") == 0) {
+                return  AMF_VIDEO_ENCODER_QUALITY_PRESET_SPEED;
+            }
         }
     }
     return 0;
@@ -226,25 +229,127 @@ int hb_map_vce_preset_name(int vcodec, const char *preset)
 
 int hb_check_amfdec_available()
 {
-    #if HB_PROJECT_FEATURE_AMFDEC
-        return 1;
-    #else
+    if (hb_is_hardware_disabled())
+    {
         return 0;
-    #endif
+    }
+
+    if (is_vcn_decoder_available != -1)
+    {
+        return is_vcn_decoder_available;
+    }
+
+    is_vcn_decoder_available = (check_component_available(AMFVideoDecoderUVD_H264_AVC) == AMF_OK) ? 1 : 0;
+    if (is_vcn_decoder_available == 1)
+    {
+        hb_log("vcn decoder: is available");
+    }
+    else
+    {
+        hb_log("vcn decoder: not available on this system");
+    }
+
+    return is_vcn_decoder_available;
 }
 
 int hb_vce_are_filters_supported(hb_list_t *filters)
 {
-    return 0;
+    int num_sw_filters = 0;
+    for (int i = 0; i < hb_list_count(filters); i++)
+    {
+        hb_filter_object_t *filter = hb_list_item(filters, i);
+        switch (filter->id)
+        {
+            // cropping and scaling always done via VPP filter
+            case HB_FILTER_CROP_SCALE:
+                break;
+            case HB_FILTER_ROTATE:
+                num_sw_filters++;
+                break;
+            case HB_FILTER_VFR:
+            {
+                // Mode 0 doesn't require access to the frame data
+                int mode = hb_dict_get_int(filter->settings, "mode");
+                if(mode != 0)
+                {
+                    num_sw_filters++;
+                }
+
+                break;
+            }
+            default:
+                // count only filters with access to frame data
+                num_sw_filters++;
+                break;
+        }
+    }
+    return num_sw_filters == 0;
 }
 
 int hb_vce_dec_is_enabled(hb_job_t *job)
 {
+    if (job && (job->hw_decode & HB_DECODE_AMFDEC))
+    {
+        return 1;
+    }
     return 0;
 }
 
 int hb_vce_sanitize_filter_list(hb_job_t *job)
 {
+    if (job && (job->hw_decode & HB_DECODE_AMFDEC))
+    {
+        int i = 0;
+        int num_sw_filters = 0;
+        int num_hw_filters = 0;
+        int converter_needed = 1;
+        int mode;
+        if (job->list_filter != NULL && hb_list_count(job->list_filter) > 0)
+        {
+            for (i = 0; i < hb_list_count(job->list_filter); i++)
+            {
+                hb_filter_object_t *filter = hb_list_item(job->list_filter, i);
+
+                switch (filter->id)
+                {
+                    // cropping and scaling always done via VPP filter
+                    case HB_FILTER_ROTATE:
+                        num_sw_filters++;
+                        break;
+                    case HB_FILTER_CROP_SCALE:
+                        if(num_sw_filters == 0) // if corp/scale is a filter before SW filters, no need for filter in decoder
+                        {
+                            converter_needed = 0;
+                        }
+                        num_hw_filters++;
+                        break;
+                    case HB_FILTER_VFR:
+                    {
+                        mode = hb_dict_get_int(filter->settings, "mode");
+                        if(mode != 0)
+                        {
+                            num_sw_filters++;
+                        }
+
+                        break;
+                    }
+                    default:
+                        // count only filters with access to frame data
+                        num_sw_filters++;
+                        break;
+                }
+            }
+        }
+        if(num_sw_filters == 0)
+        {
+            converter_needed = 0;
+        }
+
+        job->amf.num_sw_filters = num_sw_filters;
+        job->amf.num_hw_filters = num_hw_filters;
+        job->amf.converter_needed = converter_needed;
+        job->amf.converter_inserted = 0;
+    }
     return 0;
 }
 
@@ -295,122 +400,26 @@ int hb_map_vce_preset_name(int vcodec, const char *preset)
 
 int hb_check_amfdec_available()
 {
-    if (hb_is_hardware_disabled())
-    {
+    #if HB_PROJECT_FEATURE_AMFDEC
+        return 1;
+    #else
         return 0;
-    }
-
-    if (is_vcn_decoder_available != -1)
-    {
-        return is_vcn_decoder_available;
-    }
-
-    is_vcn_decoder_available = (check_component_available(AMFVideoDecoderUVD_H264_AVC) == AMF_OK) ? 1 : 0;
-    if (is_vcn_decoder_available == 1)
-    {
-        hb_log("vcn decoder: is available");
-    }
-    else
-    {
-        hb_log("vcn decoder: not available on this system");
-    }
-
-    return is_vcn_decoder_available;
+    #endif
 }
 
 int hb_vce_dec_is_enabled(hb_job_t *job)
 {
-    if (job && (job->hw_decode & HB_DECODE_AMFDEC))
-    {
-        return 1;
-    }
     return 0;
 }
 
 int hb_vce_sanitize_filter_list(hb_job_t *job)
 {
-    if (job && (job->hw_decode & HB_DECODE_AMFDEC))
-    {
-        int i = 0;
-        int num_sw_filters = 0;
-        int num_hw_filters = 0;
-        int converter_needed = 1;
-        int mode;
-        if (job->list_filter != NULL && hb_list_count(job->list_filter) > 0)
-        {
-            for (i = 0; i < hb_list_count(job->list_filter); i++)
-            {
-                hb_filter_object_t *filter = hb_list_item(job->list_filter, i);
-
-                switch (filter->id)
-                {
-                    // cropping and scaling always done via VPP filter
-                    case HB_FILTER_CROP_SCALE:
-                        if(num_sw_filters == 0) // if corp/scale is a filter before SW filters, no need for filter in decoder
-                        {
-                            converter_needed = 0;
-                        }
-                        num_hw_filters++;
-                        break;
-                    case HB_FILTER_VFR:
-                    {
-                        mode = hb_dict_get_int(filter->settings, "mode");
-                        if(mode != 0)
-                        {
-                            num_sw_filters++;
-                        }
-
-                        break;
-                    }
-                    default:
-                        // count only filters with access to frame data
-                        num_sw_filters++;
-                        break;
-                }
-            }
-        }
-        if(num_sw_filters == 0)
-        {
-            converter_needed = 0;
-        }
-
-        job->amf.num_sw_filters = num_sw_filters;
-        job->amf.num_hw_filters = num_hw_filters;
-        job->amf.converter_needed = converter_needed;
-        job->amf.converter_inserted = 0;
-    }
     return 0;
 }
 
 int hb_vce_are_filters_supported(hb_list_t *filters)
 {
-    int num_sw_filters = 0;
-    for (int i = 0; i < hb_list_count(filters); i++)
-    {
-        hb_filter_object_t *filter = hb_list_item(filters, i);
-        switch (filter->id)
-        {
-            // cropping and scaling always done via VPP filter
-            case HB_FILTER_CROP_SCALE:
-                break;
-            case HB_FILTER_VFR:
-            {
-                // Mode 0 doesn't require access to the frame data
-                int mode = hb_dict_get_int(filter->settings, "mode");
-                if(mode != 0)
-                {
-                    num_sw_filters++;
-                }
-
-                break;
-            }
-            default:
-                // count only filters with access to frame data
-                num_sw_filters++;
-                break;
-        }
-    }
-    return num_sw_filters == 0;
+    return 0;
 }
 
 #endif // HB_PROJECT_FEATURE_VCE
@@ -554,7 +563,6 @@ fail:
     hb_buffer_close(&out);
     av_frame_unref(frame_copy);
     return NULL;
-
 }
 
 int hb_vce_available()
@@ -581,5 +589,5 @@ hb_hwaccel_t hb_hwaccel_amfdec =
     .hw_pix_fmt   = AV_PIX_FMT_AMF_SURFACE,
     .can_filter   = hb_vce_are_filters_supported,
     .find_decoder = find_decoder,
-    .caps         = HB_HWACCEL_CAP_SCAN
+    .caps         = HB_HWACCEL_CAP_SCAN | HB_HWACCEL_CAP_ROTATE
 };

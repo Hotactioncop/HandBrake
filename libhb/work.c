@@ -1458,7 +1458,8 @@ static void sanitize_filter_list_post(hb_job_t *job)
     }
 #endif
 
-    if (hb_video_encoder_pix_fmt_is_supported(job->vcodec, job->input_pix_fmt, job->encoder_profile) == 0)
+    if ((job->hw_pix_fmt != AV_PIX_FMT_AMF_SURFACE) &&
+        hb_video_encoder_pix_fmt_is_supported(job->vcodec, job->input_pix_fmt, job->encoder_profile) == 0)
     {
         // Some encoders require a specific input pixel format
         // that could be different from the current pipeline format.

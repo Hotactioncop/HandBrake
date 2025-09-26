@@ -576,6 +576,9 @@ static void hb_common_global_hw_init()
 #if HB_PROJECT_FEATURE_VCE
     hb_vce_h264_available();
 #endif
+#if HB_PROJECT_FEATURE_AMFDEC
+    hb_register_hwaccel(&hb_hwaccel_amfdec);
+#endif
 #if HB_PROJECT_FEATURE_MF
     hb_directx_available();
     hb_register_hwaccel(&hb_hwaccel_mf);
@@ -2064,7 +2067,7 @@ const char* const* hb_video_encoder_get_levels(int encoder)
             return hb_h264_level_names;
 
 #if HB_PROJECT_FEATURE_VCE
-     case HB_VCODEC_FFMPEG_VCE_H264:
+        case HB_VCODEC_FFMPEG_VCE_H264:
             return hb_vce_h264_level_names; // Not quite the same as x264
 #endif
 

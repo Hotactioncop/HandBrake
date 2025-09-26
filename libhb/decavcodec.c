@@ -1488,9 +1488,11 @@ int reinit_video_filters(hb_work_private_t * pv)
             hb_dict_set(settings, "format", hb_value_string(av_get_pix_fmt_name(pv->job->input_pix_fmt)));
             hb_avfilter_append_dict(filters, "scale_cuda", settings);
         }
-        else if ((pv->frame->hw_frames_ctx && pv->job && pv->job->hw_pix_fmt == AV_PIX_FMT_AMF_SURFACE) &&
+        else if ((pv->frame->hw_frames_ctx && pv->job && pv->job->hw_pix_fmt == AV_PIX_FMT_AMF_SURFACE) && (pv->title->rotation == HB_ROTATION_0) &&
                 insert_converter)
         {
+            hb_dict_set(settings, "w", hb_value_int(orig_width));
+            hb_dict_set(settings, "h", hb_value_int(orig_height));
             pv->job->amf.num_hw_filters++;
             hb_dict_set(settings, "format", hb_value_string(av_get_pix_fmt_name(pv->job->input_pix_fmt)));
 
@@ -1560,6 +1562,60 @@ int reinit_video_filters(hb_work_private_t * pv)
             }
         }
         else
+#endif
+#if HB_PROJECT_FEATURE_AMFDEC
+        /*if (pv->frame->hw_frames_ctx && pv->job->hw_pix_fmt == AV_PIX_FMT_AMF_SURFACE)
+        {
+            switch (pv->title->rotation)
+            {
+                case HB_ROTATION_90:
+                case HB_ROTATION_180:
+                case HB_ROTATION_270:
+                    hb_log("Auto rotation temporary doesn't support by AMF");
+                    pv->title->rotation = HB_ROTATION_0;
+                    break;
+                default:
+                    hb_log("reinit_video_filters: Unknown rotation, failed");
+            }
+        }*/
+        /*if (pv->frame->hw_frames_ctx && pv->job->hw_pix_fmt == AV_PIX_FMT_AMF_SURFACE)
+        {
+            hb_avfilter_append_dict(filters, "hwdownload", hb_value_null());
+
+            const AVPixFmtDescriptor *in_desc = av_pix_fmt_desc_get(pv->job->input_pix_fmt);
+            const char *cpu_rot_fmt = (in_desc && in_desc->comp[0].depth > 8) ? "p010le" : "yuv420p";
+            settings = hb_dict_init();
+            hb_dict_set(settings, "pix_fmts", hb_value_string(cpu_rot_fmt));
+            hb_avfilter_append_dict(filters, "format", settings);
+
+            switch (pv->title->rotation)
+            {
+                case HB_ROTATION_90:
+                    settings = hb_dict_init();
+                    hb_dict_set(settings, "dir", hb_value_string("cclock"));
+                    hb_avfilter_append_dict(filters, "transpose", settings);
+                    hb_log("Auto-Rotating video 90 degrees (CPU fallback for AMF)");
+                    break;
+                case HB_ROTATION_180:
+                    hb_avfilter_append_dict(filters, "hflip", hb_value_null());
+                    hb_avfilter_append_dict(filters, "vflip", hb_value_null());
+                    hb_log("Auto-Rotating video 180 degrees (CPU fallback for AMF)");
+                    break;
+                case HB_ROTATION_270:
+                    settings = hb_dict_init();
+                    hb_dict_set(settings, "dir", hb_value_string("clock"));
+                    hb_avfilter_append_dict(filters, "transpose", settings);
+                    hb_log("Auto-Rotating video 270 degrees (CPU fallback for AMF)");
+                    break;
+                default:
+                    hb_log("reinit_video_filters: Unknown rotation, failed");
+            }
+
+            settings = hb_dict_init();
+            hb_dict_set(settings, "pix_fmts", hb_value_string(av_get_pix_fmt_name(pv->job->input_pix_fmt)));
+            hb_avfilter_append_dict(filters, "format", settings);
+        }
+         else*/
 #endif
         {
             switch (pv->title->rotation)
@@ -1792,36 +1848,43 @@ static int decodeFrame( hb_work_private_t * pv, packet_info_t * packet_info )
             if(ret == AVERROR(EAGAIN))
             {
                 send_packet = 1; // input is full: receive frame and repeat send
-                ret = 0;
-            }
-            else
-            {
                 av_packet_unref(avp);
+                ret = 0;
+                continue;
             }
-            if (ret < 0 && ret != AVERROR_EOF)
+            if (ret < 0)
             {
                 ++pv->decode_errors;
-                return 0;
+                break;
             }
         }
         ret = avcodec_receive_frame(pv->context, recv_frame);
         if (ret < 0 && ret != AVERROR(EAGAIN) && ret != AVERROR_EOF)
         {
             ++pv->decode_errors;
-        }
-        if(ret == AVERROR(EAGAIN) && send_packet)
-        {
-            continue;
-        }
-        if (ret < 0)
-        {
             break;
+        }
+        if(ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+        {
+            av_packet_unref(avp);
+            continue;
         }
         got_picture = 1;
 
+        if (recv_frame->decode_error_flags || (recv_frame->flags & AV_FRAME_FLAG_CORRUPT)) 
+        {
+            return AVERROR_INVALIDDATA;
+        }
+        //hb_log ("%d frame receive packet %ld pts, %ld pkt dts, %ld duration", frame_counter, recv_frame->pts, recv_frame->pkt_dts, recv_frame->duration);
+
         if (pv->hw_frame)
         {
-            if (pv->hw_frame->hw_frames_ctx && (pv->job == NULL || pv->hw_frame->format != AV_PIX_FMT_AMF_SURFACE))
+#if HB_PROJECT_FEATURE_AMFDEC
+            int need_cpu_rotation = pv->hw_frame->hw_frames_ctx && pv->title && (pv->title->rotation != HB_ROTATION_0);
+            if (pv->hw_frame->hw_frames_ctx && pv->hw_frame->format == AV_PIX_FMT_AMF_SURFACE && need_cpu_rotation)
+#else
+            if (pv->hw_frame->hw_frames_ctx)
+#endif
             {
                 AVHWFramesContext *hwfc = (AVHWFramesContext *)pv->hw_frame->hw_frames_ctx->data;
                 pv->frame->format = hwfc->sw_format;
@@ -1841,10 +1904,9 @@ static int decodeFrame( hb_work_private_t * pv, packet_info_t * packet_info )
                 // HWAccel falled back to the software decoder
                 av_frame_ref(pv->frame, pv->hw_frame);
                 av_frame_unref(pv->hw_frame);
+
                 if (ret < 0)
-                {
                     hb_error("decavcodec: error hwaccel copying frame");
-                }
             }
         }
 
@@ -1946,6 +2008,15 @@ static int decavcodecvInit( hb_work_object_t * w, hb_job_t * job )
             if (pv->context->codec_id == AV_CODEC_ID_HEVC)
             {
                 av_dict_set( &av_opts, "load_plugin", "hevc_hw", 0 );
+            }
+        }
+#endif
+#if HB_PROJECT_FEATURE_AMFDEC
+        if (w->hw_accel && w->hw_accel->type == AV_HWDEVICE_TYPE_AMF)
+        {
+            if (job && job->hw_pix_fmt != AV_PIX_FMT_NONE)
+            {
+                hb_hwaccel_hwframes_ctx_init(pv->context, job->input_pix_fmt, job->hw_pix_fmt);
             }
         }
 #endif
