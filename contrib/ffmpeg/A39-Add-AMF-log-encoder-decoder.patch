@@ -1,0 +1,259 @@
+From 8016ee5f6133ddee3dd69612a1c9bb15b0552707 Mon Sep 17 00:00:00 2001
+From: Araz Iusubov <Primeadvice@gmail.com>
+Date: Thu, 26 Jun 2025 16:53:06 +0200
+Subject: [PATCH] Add AMF log encoder decoder
+
+---
+ libavcodec/amfdec.c       | 17 +++++++
+ libavcodec/amfenc.c       | 96 ++++++++++++++++++++++++++++++++++++++-
+ libavutil/hwcontext_amf.c | 29 ++++++++++++
+ 3 files changed, 140 insertions(+), 2 deletions(-)
+
+diff --git a/libavcodec/amfdec.c b/libavcodec/amfdec.c
+index bccdc97..a91d73c 100644
+--- a/libavcodec/amfdec.c
++++ b/libavcodec/amfdec.c
+@@ -43,6 +43,15 @@
+ //will be in public headers soon
+ #define AMF_VIDEO_DECODER_OUTPUT_FORMAT                L"OutputDecodeFormat"
+
++#define AMF_DEBUG_LOG(fmt, ...) \
++    do { \
++        FILE* f = fopen("./vulkan_ffmpeg_log.txt", "a"); \
++        if (f) { \
++            fprintf(f, fmt "\n", ##__VA_ARGS__); \
++            fclose(f); \
++        } \
++    } while (0)
++
+ const enum AVPixelFormat amf_dec_pix_fmts[] = {
+     AV_PIX_FMT_NV12,
+     AV_PIX_FMT_P010,
+@@ -498,6 +507,14 @@ static AMF_RESULT amf_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+         data_out->pVtbl->QueryInterface(data_out, &guid, (void**)&surface); // query for buffer interface
+         data_out->pVtbl->Release(data_out);
+         data_out = NULL;
++
++        if (surface) {
++            AMFPlane *plane = surface->pVtbl->GetPlane(surface, AMF_PLANE_Y);
++            if (plane) {
++                void *native = plane->pVtbl->GetNative(plane);
++                AMF_DEBUG_LOG("Decoder output surface: %p (handle: %p)", surface, native);
++            }
++        }
+     }
+
+     ret = amf_amfsurface_to_avframe(avctx, surface, frame);
+diff --git a/libavcodec/amfenc.c b/libavcodec/amfenc.c
+index 334e181..a7c1fc2 100644
+--- a/libavcodec/amfenc.c
++++ b/libavcodec/amfenc.c
+@@ -43,6 +43,76 @@
+ #define AMF_AV_FRAME_REF    L"av_frame_ref"
+ #define PTS_PROP            L"PtsProp"
+
++#define AMF_DEBUG_LOG(fmt, ...) \
++    do { \
++        FILE* f = fopen("./vulkan_ffmpeg_log.txt", "a"); \
++        if (f) { \
++            fprintf(f, fmt "\n", ##__VA_ARGS__); \
++            fclose(f); \
++        } \
++    } while (0)
++
++static void dumpStorageProps(const char * path, AMFComponent *component)
++{
++    FILE *fp;
++    fp = fopen(path, "w");
++    if(!fp)
++       return;
++    AMF_RESULT res;
++
++    int count = component->pVtbl->GetPropertyCount(component);
++    fprintf(fp, "count = %d\n", count);
++    int i;
++    AMFVariantStruct    var = {0};
++    res = AMFVariantInit(&var);
++
++    for (i = 0; i < count; ++i)
++    {
++        wchar_t name[100];
++        amf_size nameSize = 40;
++
++        res = component->pVtbl->GetPropertyAt(component, i, &name, nameSize, &var);
++
++        switch (var.type) {
++        case AMF_VARIANT_BOOL:
++            fprintf(fp, "%S %s\n", name, var.boolValue == true?"true":"false");
++            break;
++        case AMF_VARIANT_INT64:
++            fprintf(fp, "%S %d\n", name, var.int64Value);
++            break;
++        case AMF_VARIANT_DOUBLE:
++            fprintf(fp, "%S %f\n", name, var.doubleValue);
++            break;
++        case AMF_VARIANT_STRING:
++            fprintf(fp, "%S %s\n", name, var.stringValue);
++            break;
++        case AMF_VARIANT_WSTRING:
++            fprintf(fp, "%S %S\n", name, var.wstringValue);
++            break;
++        case AMF_VARIANT_RATE:
++            fprintf(fp, "%S %d:%d\n", name, var.rateValue.num, var.rateValue.den);
++            break;
++        case AMF_VARIANT_RATIO:
++            fprintf(fp, "%S %d:%d\n", name, var.ratioValue.num, var.ratioValue.den);
++            break;
++        case AMF_VARIANT_SIZE:
++            fprintf(fp, "%S %d - %d\n", name, var.sizeValue.width, var.sizeValue.height);
++            break;
++        case AMF_VARIANT_POINT:
++            fprintf(fp, "%S %d - %d\n", name, var.pointValue.x, var.pointValue.y);
++            break;
++        case AMF_VARIANT_COLOR:
++            fprintf(fp, "%S %d.%d.%d.%d\n", name, var.colorValue.r, var.colorValue.g, var.colorValue.b, var.colorValue.a);
++            break;
++        default:
++            fprintf(fp, "%S %s\n", name, "type_AMFInterface -----------------------------------------");
++            break;
++        }
++    }
++
++    fclose(fp);
++}
++
+ static int amf_save_hdr_metadata(AVCodecContext *avctx, const AVFrame *frame, AMFHDRMetadata *hdrmeta)
+ {
+     AVFrameSideData            *sd_display;
+@@ -603,6 +673,13 @@ static int amf_submit_frame(AVCodecContext *avctx, AVFrame    *frame, AMFSurface
+         break;
+     }
+     // submit surface
++            if (surface) {
++                AMFPlane *plane = surface->pVtbl->GetPlane(surface, AMF_PLANE_Y);
++                if (plane) {
++                    void *native = plane->pVtbl->GetNative(plane);
++                    AMF_DEBUG_LOG("Encoder SubmitInput: surface %p (handle: %p)", surface, native);
++                }
++            }
+     res = ctx->encoder->pVtbl->SubmitInput(ctx->encoder, (AMFData*)surface);
+     if (res == AMF_INPUT_FULL) { // handle full queue
+         //store surface for later submission
+@@ -648,6 +725,7 @@ int ff_amf_receive_packet(AVCodecContext *avctx, AVPacket *avpkt)
+     int         block_and_wait;
+     int64_t     pts = 0;
+     int max_b_frames = ctx->max_b_frames < 0 ? 0 : ctx->max_b_frames;
++    static int isFirstFrame = 0;
+
+     if (!ctx->encoder){
+         av_frame_free(&frame);
+@@ -663,7 +741,13 @@ int ff_amf_receive_packet(AVCodecContext *avctx, AVPacket *avpkt)
+             }
+         }
+     }
+-    if(ret != AVERROR(EAGAIN)){
++    if (isFirstFrame==0)
++    {
++        dumpStorageProps("./propertiesFfmpeg.txt", ctx->encoder);
++        ++isFirstFrame;
++    }
++
++if(ret != AVERROR(EAGAIN)){
+         if (!frame->buf[0]) { // submit drain
+             if (!ctx->eof) { // submit drain one time only
+                 if(!ctx->delayed_drain) {
+@@ -694,7 +778,7 @@ int ff_amf_receive_packet(AVCodecContext *avctx, AVPacket *avpkt)
+         // poll data
+
+         res_query = ctx->encoder->pVtbl->QueryOutput(ctx->encoder, &data);
+-        if (data) {
++        if (data) {
+             // copy data to packet
+             AMFBuffer *buffer;
+             AMFGuid guid = IID_AMFBuffer();
+@@ -736,6 +820,14 @@ int ff_amf_receive_packet(AVCodecContext *avctx, AVPacket *avpkt)
+     } else {
+         if(surface) {
+             // resubmit surface
++            if (surface) {
++                AMFPlane *plane = surface->pVtbl->GetPlane(surface, AMF_PLANE_Y);
++                if (plane) {
++                    void *native = plane->pVtbl->GetNative(plane);
++                    AMF_DEBUG_LOG("Encoder RE SubmitInput: surface %p (handle: %p)", surface, native);
++                }
++            }
++
+             res = ctx->encoder->pVtbl->SubmitInput(ctx->encoder, (AMFData*)surface);
+             surface->pVtbl->Release(surface);
+             if (res == AMF_INPUT_FULL) {
+diff --git a/libavutil/hwcontext_amf.c b/libavutil/hwcontext_amf.c
+index 8e0ce19..ea573f7 100644
+--- a/libavutil/hwcontext_amf.c
++++ b/libavutil/hwcontext_amf.c
+@@ -43,9 +43,18 @@
+ #include "compat/w32dlfcn.h"
+ #else
+ #include <dlfcn.h>
++#include <unistd.h>
+ #endif
+ #define FFMPEG_AMF_WRITER_ID L"ffmpeg_amf"
+
++#define AMF_DEBUG_LOG(fmt, ...) \
++    do { \
++        FILE* f = fopen("./vulkan_ffmpeg_log.txt", "a"); \
++        if (f) { \
++            fprintf(f, fmt "\n", ##__VA_ARGS__); \
++            fclose(f); \
++        } \
++    } while (0)
+
+ typedef struct AmfTraceWriter {
+     AMFTraceWriterVtbl *vtblp;
+@@ -258,6 +267,14 @@ static void amf_free_amfsurface(void *opaque, uint8_t *data)
+ {
+     if(!!data){
+         AMFSurface *surface = (AMFSurface*)(data);
++            if (surface) {
++                AMFPlane *plane = surface->pVtbl->GetPlane(surface, AMF_PLANE_Y);
++                if (plane) {
++                    void *native = plane->pVtbl->GetNative(plane);
++                    AMF_DEBUG_LOG("Free AMF Surface %p (handle: %p)", surface, native);
++                }
++            }
++        sleep(1);
+         surface->pVtbl->Release(surface);
+     }
+ }
+@@ -323,6 +340,14 @@ static int amf_transfer_data_from(AVHWFramesContext *ctx, AVFrame *dst,
+     planes = (int)surface->pVtbl->GetPlanesCount(surface);
+     av_assert0(planes < FF_ARRAY_ELEMS(src_data));
+
++    if (surface) {
++        AMFPlane *plane = surface->pVtbl->GetPlane(surface, AMF_PLANE_Y);
++        if (plane) {
++            void *native = plane->pVtbl->GetNative(plane);
++            AMF_DEBUG_LOG("Transfer data from: %p (handle: %p)", surface, native);
++        }
++    }
++
+     for (i = 0; i < planes; i++) {
+         plane = surface->pVtbl->GetPlaneAt(surface, i);
+         src_data[i] = plane->pVtbl->GetNative(plane);
+@@ -339,10 +364,14 @@ static int amf_transfer_data_from(AVHWFramesContext *ctx, AVFrame *dst,
+ static void amf_device_uninit(AVHWDeviceContext *device_ctx)
+ {
+     AVAMFDeviceContext      *amf_ctx = device_ctx->hwctx;
++
++    AMF_DEBUG_LOG("Uninitializing AMF device...\n");
++
+     AMF_RESULT          res;
+     AMFTrace           *trace;
+
+     if (amf_ctx->context) {
++        AMF_DEBUG_LOG("Calling AMFContext->Terminate\n");
+         amf_ctx->context->pVtbl->Terminate(amf_ctx->context);
+         amf_ctx->context->pVtbl->Release(amf_ctx->context);
+         amf_ctx->context = NULL;
+--
+2.34.1
+

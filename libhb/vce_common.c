@@ -254,36 +254,7 @@ int hb_check_amfdec_available()
 
 int hb_vce_are_filters_supported(hb_list_t *filters)
 {
-    int num_sw_filters = 0;
-    for (int i = 0; i < hb_list_count(filters); i++)
-    {
-        hb_filter_object_t *filter = hb_list_item(filters, i);
-        switch (filter->id)
-        {
-            // cropping and scaling always done via VPP filter
-            case HB_FILTER_CROP_SCALE:
-                break;
-            case HB_FILTER_ROTATE:
-                num_sw_filters++;
-                break;
-            case HB_FILTER_VFR:
-            {
-                // Mode 0 doesn't require access to the frame data
-                int mode = hb_dict_get_int(filter->settings, "mode");
-                if(mode != 0)
-                {
-                    num_sw_filters++;
-                }
-
-                break;
-            }
-            default:
-                // count only filters with access to frame data
-                num_sw_filters++;
-                break;
-        }
-    }
-    return num_sw_filters == 0;
+    return 1;
 }
 
 int hb_vce_dec_is_enabled(hb_job_t *job)
@@ -589,5 +560,5 @@ hb_hwaccel_t hb_hwaccel_amfdec =
     .hw_pix_fmt   = AV_PIX_FMT_AMF_SURFACE,
     .can_filter   = hb_vce_are_filters_supported,
     .find_decoder = find_decoder,
-    .caps         = HB_HWACCEL_CAP_SCAN | HB_HWACCEL_CAP_ROTATE
+    .caps         = HB_HWACCEL_CAP_SCAN
 };

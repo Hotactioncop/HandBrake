@@ -1,0 +1,28 @@
+From 6fd0cdee9e5ca0645d5283c2cc1fa7b9504cfb78 Mon Sep 17 00:00:00 2001
+From: Araz Iusubov <Primeadvice@gmail.com>
+Date: Wed, 16 Jul 2025 12:52:11 +0200
+Subject: [PATCH] Fix duplicate frames
+
+---
+ libavutil/hwcontext_amf.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/libavutil/hwcontext_amf.c b/libavutil/hwcontext_amf.c
+index 10ff888..002cb9c 100644
+--- a/libavutil/hwcontext_amf.c
++++ b/libavutil/hwcontext_amf.c
+@@ -519,8 +519,10 @@ static int amf_device_create(AVHWDeviceContext *device_ctx,
+
+
+         ret = ctx->factory->pVtbl->CreateContext(ctx->factory, &ctx->context);
+-        if (ret == AMF_OK)
++        if (ret == AMF_OK) {
++            AMF_ASSIGN_PROPERTY_INT64(ret, ctx->context, L"DeviceSurfaceCacheSize", 50 );
+             return 0;
++        }
+         av_log(device_ctx, AV_LOG_ERROR, "CreateContext() failed with error %d.\n", ret);
+     }
+     amf_device_uninit(device_ctx);
+--
+2.34.1
+

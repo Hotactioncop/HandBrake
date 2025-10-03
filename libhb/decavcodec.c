@@ -1166,7 +1166,7 @@ static hb_buffer_t *copy_frame( hb_work_private_t *pv )
     reordered_data_t * reordered = NULL;
     hb_buffer_t      * out;
 
-    if(pv->job && pv->job->hw_pix_fmt == AV_PIX_FMT_AMF_SURFACE)
+    if(pv->job && pv->job->hw_pix_fmt == AV_PIX_FMT_AMF_SURFACE && pv->title->rotation == HB_ROTATION_0)
     {
         out = hb_vce_copy_avframe_to_video_buffer(pv->job, pv->frame, (AVRational){1,1});
     }
@@ -1491,8 +1491,6 @@ int reinit_video_filters(hb_work_private_t * pv)
         else if ((pv->frame->hw_frames_ctx && pv->job && pv->job->hw_pix_fmt == AV_PIX_FMT_AMF_SURFACE) && (pv->title->rotation == HB_ROTATION_0) &&
                 insert_converter)
         {
-            hb_dict_set(settings, "w", hb_value_int(orig_width));
-            hb_dict_set(settings, "h", hb_value_int(orig_height));
             pv->job->amf.num_hw_filters++;
             hb_dict_set(settings, "format", hb_value_string(av_get_pix_fmt_name(pv->job->input_pix_fmt)));
 
@@ -1562,60 +1560,6 @@ int reinit_video_filters(hb_work_private_t * pv)
             }
         }
         else
-#endif
-#if HB_PROJECT_FEATURE_AMFDEC
-        /*if (pv->frame->hw_frames_ctx && pv->job->hw_pix_fmt == AV_PIX_FMT_AMF_SURFACE)
-        {
-            switch (pv->title->rotation)
-            {
-                case HB_ROTATION_90:
-                case HB_ROTATION_180:
-                case HB_ROTATION_270:
-                    hb_log("Auto rotation temporary doesn't support by AMF");
-                    pv->title->rotation = HB_ROTATION_0;
-                    break;
-                default:
-                    hb_log("reinit_video_filters: Unknown rotation, failed");
-            }
-        }*/
-        /*if (pv->frame->hw_frames_ctx && pv->job->hw_pix_fmt == AV_PIX_FMT_AMF_SURFACE)
-        {
-            hb_avfilter_append_dict(filters, "hwdownload", hb_value_null());
-
-            const AVPixFmtDescriptor *in_desc = av_pix_fmt_desc_get(pv->job->input_pix_fmt);
-            const char *cpu_rot_fmt = (in_desc && in_desc->comp[0].depth > 8) ? "p010le" : "yuv420p";
-            settings = hb_dict_init();
-            hb_dict_set(settings, "pix_fmts", hb_value_string(cpu_rot_fmt));
-            hb_avfilter_append_dict(filters, "format", settings);
-
-            switch (pv->title->rotation)
-            {
-                case HB_ROTATION_90:
-                    settings = hb_dict_init();
-                    hb_dict_set(settings, "dir", hb_value_string("cclock"));
-                    hb_avfilter_append_dict(filters, "transpose", settings);
-                    hb_log("Auto-Rotating video 90 degrees (CPU fallback for AMF)");
-                    break;
-                case HB_ROTATION_180:
-                    hb_avfilter_append_dict(filters, "hflip", hb_value_null());
-                    hb_avfilter_append_dict(filters, "vflip", hb_value_null());
-                    hb_log("Auto-Rotating video 180 degrees (CPU fallback for AMF)");
-                    break;
-                case HB_ROTATION_270:
-                    settings = hb_dict_init();
-                    hb_dict_set(settings, "dir", hb_value_string("clock"));
-                    hb_avfilter_append_dict(filters, "transpose", settings);
-                    hb_log("Auto-Rotating video 270 degrees (CPU fallback for AMF)");
-                    break;
-                default:
-                    hb_log("reinit_video_filters: Unknown rotation, failed");
-            }
-
-            settings = hb_dict_init();
-            hb_dict_set(settings, "pix_fmts", hb_value_string(av_get_pix_fmt_name(pv->job->input_pix_fmt)));
-            hb_avfilter_append_dict(filters, "format", settings);
-        }
-         else*/
 #endif
         {
             switch (pv->title->rotation)
@@ -1879,12 +1823,11 @@ static int decodeFrame( hb_work_private_t * pv, packet_info_t * packet_info )
 
         if (pv->hw_frame)
         {
+            if ((pv->hw_frame->hw_frames_ctx && (pv->job == NULL || pv->hw_frame->format != AV_PIX_FMT_AMF_SURFACE))
 #if HB_PROJECT_FEATURE_AMFDEC
-            int need_cpu_rotation = pv->hw_frame->hw_frames_ctx && pv->title && (pv->title->rotation != HB_ROTATION_0);
-            if (pv->hw_frame->hw_frames_ctx && pv->hw_frame->format == AV_PIX_FMT_AMF_SURFACE && need_cpu_rotation)
-#else
-            if (pv->hw_frame->hw_frames_ctx)
+                || (pv->hw_frame->format == AV_PIX_FMT_AMF_SURFACE && pv->title->rotation != HB_ROTATION_0)
 #endif
+            )
             {
                 AVHWFramesContext *hwfc = (AVHWFramesContext *)pv->hw_frame->hw_frames_ctx->data;
                 pv->frame->format = hwfc->sw_format;
