@@ -15,6 +15,7 @@
 #include "handbrake/hbavfilter.h"
 #include "handbrake/avfilter_priv.h"
 #include "handbrake/hwaccel.h"
+#include "handbrake/vce_common.h"
 
 struct hb_avfilter_graph_s
 {
@@ -267,7 +268,15 @@ hb_buffer_t * hb_avfilter_get_buf(hb_avfilter_graph_t * graph)
     int result = av_buffersink_get_frame(graph->output, graph->frame);
     if (result >= 0)
     {
-        hb_buffer_t *buf = hb_avframe_to_video_buffer(graph->frame, graph->out_time_base);
+        hb_buffer_t * buf;
+        if(hb_vce_hw_filters_via_video_memory_are_enabled(graph->job))
+        {
+            buf = hb_vce_copy_avframe_to_video_buffer(graph->job, graph->frame, graph->out_time_base);
+        }
+        else
+        {
+            buf = hb_avframe_to_video_buffer(graph->frame, graph->out_time_base);
+        }
         av_frame_unref(graph->frame);
         return buf;
     }

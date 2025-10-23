@@ -1406,6 +1406,9 @@ static void sanitize_filter_list_pre(hb_job_t *job, hb_geometry_t src_geo)
             }
         }
     }
+
+    if (hb_vce_dec_is_enabled(job))
+        hb_vce_sanitize_filter_list(job);
 }
 
 static enum AVPixelFormat match_pix_fmt(enum AVPixelFormat pix_fmt,
@@ -1457,8 +1460,9 @@ static void sanitize_filter_list_post(hb_job_t *job)
 
     hb_hwaccel_t *hwaccel = job->hw_accel;
 
-    if (hb_video_encoder_pix_fmt_is_supported(job->vcodec, job->input_pix_fmt, job->encoder_profile) == 0 ||
-        (job->hw_pix_fmt != AV_PIX_FMT_NONE && hwaccel && (hwaccel->caps & HB_HWACCEL_CAP_FORMAT_REQUIRED)))
+    if ((job->hw_pix_fmt != AV_PIX_FMT_AMF_SURFACE) &&
+        (hb_video_encoder_pix_fmt_is_supported(job->vcodec, job->input_pix_fmt, job->encoder_profile) == 0 ||
+        (job->hw_pix_fmt != AV_PIX_FMT_NONE && hwaccel && (hwaccel->caps & HB_HWACCEL_CAP_FORMAT_REQUIRED))))
     {
         // Some encoders require a specific input pixel format
         // that could be different from the current pipeline format.
